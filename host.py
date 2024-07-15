@@ -263,7 +263,7 @@ def api_call(img, txt):
     }
 
     response = requests.post(url, headers=headers, json=payload)
-
+    print(response)
     response_json = response.json()
 
     content = response_json['choices'][0]['message']['content']
@@ -431,27 +431,30 @@ def interact_chat(message, history):
     return get_response(prompt)
 
 
-with gr.Blocks() as demo:
+with gr.Blocks(theme='freddyaboulton/dracula_revamped') as demo:
     with gr.Row():
         with gr.Column(scale=1):
-            button = gr.Button("Login", link="/login")
             user_img = gr.Image(type="pil")
 
             user_txt = gr.Textbox(label="Enter Text")
             submit_btn = gr.Button(value="Submit")
             chatbot = gr.ChatInterface(interact_chat)
         with gr.Column(scale=1):
-            image_editor = gr.ImageEditor(label="Edit Image")
-            generated_img = gr.Image(show_label=False)
-            edited_img = gr.Image(show_label=False)
-            feature_add = gr.Textbox(label="Feature to Add")
-            edit_btn = gr.Button(value="Generate Edited Image")
-
-            img_txt = gr.Textbox(label = "Style to Generate:")
-            style_btn = gr.Button(value="Generate Styled Image")
             api_resp = gr.Textbox(label = "API Response")
             ad1 = gr.Audio(streaming=True)
             ad2 = gr.Audio(streaming=True)
+
+            img_txt = gr.Textbox(label = "Style to Generate:")
+            generated_img = gr.Image(show_label=False)
+            style_btn = gr.Button(value="Generate Styled Image")
+
+            edited_img = gr.Image(show_label=False)
+            image_editor = gr.ImageEditor(label="Edit Image")
+            feature_add = gr.Textbox(label="Feature to Add")
+            edit_btn = gr.Button(value="Generate Edited Image")
+            button = gr.Button("Login", link="/login")
+
+
 
     edit_btn.click(fn=generate_edited_image, inputs = [user_img, image_editor, feature_add], outputs=edited_img)
     style_btn.click(fn=generate_style_image, inputs = [user_img, img_txt], outputs = generated_img)
@@ -471,10 +474,9 @@ with gr.Blocks() as demo:
 
 app = gr.mount_gradio_app(app, demo, path="/login-demo")
 
-with gr.Blocks() as main_demo:
+with gr.Blocks(theme='freddyaboulton/dracula_revamped') as main_demo:
     with gr.Row():
         with gr.Column(scale=1):
-            button = gr.Button("Logout", link="/logout")
 
             user_img = gr.Image(show_label = False)
             main_demo.load(fn=refresh, inputs=None, outputs=user_img,
@@ -488,18 +490,21 @@ with gr.Blocks() as main_demo:
             chatbot = gr.ChatInterface(interact_chat)
 
         with gr.Column(scale=1):
-            image_editor = gr.ImageEditor(label="Edit Image")
-            generated_img = gr.Image(show_label=False)
-            edited_img = gr.Image(show_label=False)
-
-            feature_add = gr.Textbox(label="Feature to Add")
-            edit_btn = gr.Button(value="Generate Edited Image")
-
-            img_txt = gr.Textbox(label = "Generate Styled Image")
-            style_btn = gr.Button(value="Submit Style prompt")
             api_resp = gr.Textbox(label = "API Response")
             ad1 = gr.Audio(streaming=True)
             ad2 = gr.Audio(streaming=True)
+
+            generated_img = gr.Image(show_label=False)
+            img_txt = gr.Textbox(label = "Generate Styled Image")
+            style_btn = gr.Button(value="Submit Style prompt")
+
+            edited_img = gr.Image(show_label=False)
+            image_editor = gr.ImageEditor(label="Edit Image")
+            feature_add = gr.Textbox(label="Feature to Add")
+            edit_btn = gr.Button(value="Generate Edited Image")
+            button = gr.Button("Logout", link="/logout")
+
+
     
     edit_btn.click(fn=generate_edited_image, inputs = [user_img, image_editor, feature_add], outputs=edited_img)
 
