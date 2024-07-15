@@ -9,6 +9,8 @@ from PIL import Image
 import io
 from io import BytesIO
 import numpy as np
+from openai import OpenAI
+import tensorflow as tf
 
 import os
 from dotenv import load_dotenv
@@ -20,15 +22,37 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import Flow
 from starlette.middleware.sessions import SessionMiddleware
-
+import tensorflow_hub as hub
 import re
 load_dotenv()
 
+BASE_API_URL = "http://127.0.0.1:7860/api/v1/run"
+FLOW_ID = os.getenv("FLOW_ID")
+ENDPOINT = "" # You can set a specific endpoint name in the flow settings
+
+# You can tweak the flow by adding a tweaks dictionary
+# e.g {"OpenAI-XXXXX": {"model_name": "gpt-4"}}
+TWEAKS = {
+  "ChatInput-EPu3B": {},
+  "AstraVectorStoreComponent-NdoG7": {},
+  "ParseData-mxIRz": {},
+  "Prompt-ts3gs": {},
+  "ChatOutput-Nz7mg": {},
+  "SplitText-0N7bG": {},
+  "File-ouYQ6": {},
+  "AstraVectorStoreComponent-arHib": {},
+  "OpenAIEmbeddings-n58rH": {},
+  "OpenAIEmbeddings-eM4b9": {},
+  "OpenAIModel-ZLcsP": {}
+}
+
+os.environ['TFHUB_MODEL_LOAD_FORMAT'] = 'COMPRESSED'
 app = FastAPI()
 photoix = 0
 items = []
 placeholder_image = None
 CLIENT_SECRETS_FILE = "credentials.json"
+hub_model = hub.load('https://tfhub.dev/google/magenta/arbitrary-image-stylization-v1-256/2')
 
 os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
 os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
@@ -51,6 +75,48 @@ song_path = "audio_file.mp3"
 
 SECRET_KEY = os.environ.get('SECRET_KEY') or "a_very_secret_key"
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
+
+def run_flow(message: str,
+  endpoint: str,
+  output_type: str = "chat",
+  input_type: str = "chat",
+  tweaks=None,
+  api_key=None):
+    """
+    Run a flow with a given message and optional tweaks.
+
+    :param message: The message to send to the flow
+    :param endpoint: The ID or the endpoint name of the flow
+    :param tweaks: Optional tweaks to customize the flow
+    :return: The JSON response from the flow
+    """
+    api_url = f"{BASE_API_URL}/{endpoint}"
+
+    payload = {
+        "input_value": message,
+        "output_type": output_type,
+        "input_type": input_type,
+    }
+    headers = None
+    if tweaks:
+        payload["tweaks"] = tweaks
+    if api_key:
+        headers = {"x-api-key": api_key}
+    response = requests.post(api_url, json=payload, headers=headers)
+    return response.json()
+
+def get_response(msg):
+    response = run_flow(
+        message=msg,
+        endpoint=FLOW_ID,
+        output_type="chat",
+        input_type="chat",
+        tweaks=None,
+        api_key=None
+    )
+
+    return response["outputs"][0]["outputs"][0]["results"]["message"]["text"]
+
 # Assuming you have an image object called 'img'
 def get_user(request: Request):
     user = request.session.get('credentials')
@@ -230,6 +296,141 @@ def mv_left():
     photoix = (photoix - 1) % len(items)
     return refresh()
 
+def tensor_to_image(tensor):
+  tensor = tensor*255
+  tensor = np.array(tensor, dtype=np.uint8)
+  if np.ndim(tensor)>3:
+    assert tensor.shape[0] == 1
+    tensor = tensor[0]
+  return Image.fromarray(tensor)
+
+def load_img(orig_img):
+  max_dim = 512
+  img_byte_arr = io.BytesIO()
+  orig_img.save(img_byte_arr, format='PNG')
+  img_byte_arr = img_byte_arr.getvalue()
+
+  out = tf.image.decode_image(img_byte_arr, channels=3)
+  img = tf.image.convert_image_dtype(out, tf.float32)
+
+  shape = tf.cast(tf.shape(img)[:-1], tf.float32)
+  long_dim = max(shape)
+  scale = max_dim / long_dim
+
+  new_shape = tf.cast(shape * scale, tf.int32)
+
+  img = tf.image.resize(img, new_shape)
+  img = img[tf.newaxis, :]
+  return img
+
+def tensor_to_image(tensor):
+  tensor = tensor*255
+  tensor = np.array(tensor, dtype=np.uint8)
+  if np.ndim(tensor)>3:
+    assert tensor.shape[0] == 1
+    tensor = tensor[0]
+  return Image.fromarray(tensor)
+
+def generate_image(text):
+    client = OpenAI(
+        api_key=os.getenv('AIML_KEY'),
+        base_url="https://api.aimlapi.com/",
+        )
+    response = client.images.generate(
+      model="dall-e-3",
+      prompt=text,
+      size="1024x1024",
+      quality="standard",
+      n=1,
+    )
+    image_url = response.data[0].url
+    return image_url
+
+def remove_background(input_img):
+    response = requests.post(
+        'https://api.remove.bg/v1.0/removebg',
+        data={'image_url': input_img,'size': 'auto'},
+        headers={'X-Api-Key': os.getenv('BG_KEY')},
+    )
+    print(response)
+    print(response.content)
+    return  Image.open(BytesIO(response.content))
+
+
+def process_image(edited_image, orig_width, orig_height):
+    global image1_x, image1_y 
+    if edited_image is not None and isinstance(edited_image, dict):
+        if 'layers' in edited_image and edited_image['layers']:
+            last_layer = edited_image['layers'][-1]
+            drawn_pixels = np.where(last_layer[:,:,3] > 0)
+            if len(drawn_pixels[0]) > 0:
+                min_y, max_y = drawn_pixels[0].min(), drawn_pixels[0].max()
+                min_x, max_x = drawn_pixels[1].min(), drawn_pixels[1].max()
+                image1_x = min_x
+                image1_y = min_y
+
+                image1_x = int(image1_x / 1024 * orig_height)
+                image1_y = int(image1_y / 1024 * orig_width)
+
+def combine_images(background_img, overlay_img):
+    # Open the background image
+    if(isinstance(background_img, np.ndarray)):
+        background_img = Image.fromarray(background_img)
+
+    if(isinstance(overlay_img, np.ndarray)):
+        overlay_img = Image.fromarray(overlay_img)
+
+    background_img = background_img.convert("RGBA")
+    overlay_img = overlay_img.convert("RGBA")
+
+    # Resize overlay to fit on background if needed
+    overlay_width = int(background_img.width * 0.3)  # 30% of background width
+    overlay_height = int(overlay_img.height * (overlay_width / overlay_img.width))
+    overlay_img = overlay_img.resize((overlay_width, overlay_height), Image.LANCZOS)
+
+    # Calculate position to paste overlay (adjust as needed)
+    position = (
+        (image1_x),
+        (image1_y)
+    )
+
+    combined = Image.alpha_composite(background_img, Image.new("RGBA", background_img.size))
+    combined.paste(overlay_img, position, mask=overlay_img)
+
+    # Save the result
+    return combined
+def generate_edited_image(orig_img, placement_img, txt):
+    image_url = generate_image(txt)
+    
+    width, height = orig_img.size
+
+    process_image(placement_img, width, height)
+    edits = remove_background(image_url)
+    return combine_images(orig_img, edits)
+
+def generate_style_image(img, text):
+    if(isinstance(img, np.ndarray)):
+        img = Image.fromarray(img)
+    
+    image_url = generate_image(text)
+    response = requests.get(image_url)
+    style_image = Image.open(BytesIO(response.content))
+
+    content_image = load_img(img)
+    style_image = load_img(style_image)
+
+    stylized_image = hub_model(tf.constant(content_image), tf.constant(style_image))[0]
+    return tensor_to_image(stylized_image)
+
+def interact_chat(message, history):
+    prompt = "History: \n"
+    for human, ai in history:
+        prompt += "Human: " + human + " AI: " + ai + "\n"
+
+    prompt += "Current Message: " + message
+    return get_response(prompt)
+
+
 with gr.Blocks() as demo:
     with gr.Row():
         with gr.Column(scale=1):
@@ -238,22 +439,33 @@ with gr.Blocks() as demo:
 
             user_txt = gr.Textbox(label="Enter Text")
             submit_btn = gr.Button(value="Submit")
+            chatbot = gr.ChatInterface(interact_chat)
         with gr.Column(scale=1):
-            txt2 = gr.Textbox(label = "API Response")
+            image_editor = gr.ImageEditor(label="Edit Image")
+            generated_img = gr.Image(show_label=False)
+            edited_img = gr.Image(show_label=False)
+            feature_add = gr.Textbox(label="Feature to Add")
+            edit_btn = gr.Button(value="Generate Edited Image")
+
+            img_txt = gr.Textbox(label = "Style to Generate:")
+            style_btn = gr.Button(value="Generate Styled Image")
+            api_resp = gr.Textbox(label = "API Response")
             ad1 = gr.Audio(streaming=True)
             ad2 = gr.Audio(streaming=True)
-   
+
+    edit_btn.click(fn=generate_edited_image, inputs = [user_img, image_editor, feature_add], outputs=edited_img)
+    style_btn.click(fn=generate_style_image, inputs = [user_img, img_txt], outputs = generated_img)
     submit_btn.click(
             fn=api_call,
             inputs=[user_img, user_txt],
-            outputs=txt2
+            outputs=api_resp,
     ).then(
         fn=generate_sound_effect,
-        inputs=txt2,
+        inputs=api_resp,
         outputs=ad2
     ).then(
         fn=generate_and_download_music,
-        inputs=txt2,
+        inputs=api_resp,
         outputs=ad1
     )
 
@@ -262,6 +474,8 @@ app = gr.mount_gradio_app(app, demo, path="/login-demo")
 with gr.Blocks() as main_demo:
     with gr.Row():
         with gr.Column(scale=1):
+            button = gr.Button("Logout", link="/logout")
+
             user_img = gr.Image(show_label = False)
             main_demo.load(fn=refresh, inputs=None, outputs=user_img,
                 show_progress=False)
@@ -271,24 +485,38 @@ with gr.Blocks() as main_demo:
 
             user_txt = gr.Textbox(label="Enter Text")
             submit_btn = gr.Button(value="Submit")
+            chatbot = gr.ChatInterface(interact_chat)
+
         with gr.Column(scale=1):
-            txt2 = gr.Textbox(label = "API Response")
+            image_editor = gr.ImageEditor(label="Edit Image")
+            generated_img = gr.Image(show_label=False)
+            edited_img = gr.Image(show_label=False)
+
+            feature_add = gr.Textbox(label="Feature to Add")
+            edit_btn = gr.Button(value="Generate Edited Image")
+
+            img_txt = gr.Textbox(label = "Generate Styled Image")
+            style_btn = gr.Button(value="Submit Style prompt")
+            api_resp = gr.Textbox(label = "API Response")
             ad1 = gr.Audio(streaming=True)
             ad2 = gr.Audio(streaming=True)
     
+    edit_btn.click(fn=generate_edited_image, inputs = [user_img, image_editor, feature_add], outputs=edited_img)
+
+    style_btn.click(fn=generate_style_image, inputs = [user_img, img_txt], outputs = generated_img)
     btn_left.click(fn=mv_right, inputs=None, outputs=user_img)
     btn_right.click(fn=mv_left, inputs=None, outputs=user_img)
     submit_btn.click(
             fn=api_call,
             inputs=[user_img, user_txt],
-            outputs=txt2
+            outputs=api_resp,
     ).then(
         fn=generate_sound_effect,
-        inputs=txt2,
+        inputs=api_resp,
         outputs=ad2
     ).then(
         fn=generate_and_download_music,
-        inputs=txt2,
+        inputs=api_resp,
         outputs=ad1
     )
 

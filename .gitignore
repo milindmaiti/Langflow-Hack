@@ -2,4 +2,5 @@ credentials.json
 audio_file.mp3
 effects.mp3
 .env
+tmp.py
 test.py
